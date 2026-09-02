@@ -14,31 +14,42 @@ The whole of it was one command:
 
 ```mermaid
 flowchart TD
-    F(["./run.sh --theme ... --lang ..."]) --> R(["00-request.json"])
+    F(["./run.sh --theme ... --lang ..."]) --> R[/"00-request.json"/]
 
-    R --> S1["process 1 - poem-writer<br/>write an English poem<br/>on the requested theme"]
-    S1 --> A1(["01-poem.json<br/>+ sha256 of the request"])
+    %% Edges point at the SUBGRAPH id, not the node inside it. Naming the inner
+    %% node makes dagre route the arrow through the cluster border to reach it,
+    %% which is what made the arrows look like they overlapped the box. Naming
+    %% the cluster terminates the arrow on its edge instead.
+    R --> P1
+    subgraph P1["process 1 - poem-writer"]
+        S1[["write an English poem<br/>on the requested theme"]]
+    end
+    P1 --> A1[/"01-poem.json<br/>+ sha256 of the request"/]
 
-    A1 --> S2["process 2 - poem-translator<br/>translate into<br/>the requested language"]
-    S2 --> A2(["02-translation.json<br/>+ sha256 of 01"])
+    A1 --> P2
+    subgraph P2["process 2 - poem-translator"]
+        S2[["translate into<br/>the requested language"]]
+    end
+    P2 --> A2[/"02-translation.json<br/>+ sha256 of 01"/]
 
-    A2 --> S3["process 3 - gist-publisher<br/>render Markdown,<br/>update this gist"]
-    S3 --> A3(["03-published.json<br/>+ sha256 of 02"])
-    S3 --> G[("this gist<br/>poem.md")]
+    A2 --> P3
+    subgraph P3["process 3 - gist-publisher"]
+        S3[["render Markdown,<br/>update this gist"]]
+    end
+    P3 --> A3[/"03-published.json<br/>+ sha256 of 02"/]
+    P3 --> G[("this gist<br/>poem.md")]
 
-    A1 -.-> V{{"verify.py<br/>reads only artifacts"}}
+    A1 -.-> V{"verify.py<br/>reads only artifacts"}
     A2 -.-> V
     A3 -.-> V
     G -.-> V
-
-    %% Both fill and text colour are set explicitly, so the processes read the
-    %% same whether GitHub serves the light or the dark mermaid theme. The
-    %% artifacts are left unstyled and follow whichever theme is in use.
-    classDef proc fill:#1f6feb,stroke:#58a6ff,stroke-width:2px,color:#ffffff
-    classDef gist fill:#238636,stroke:#3fb950,stroke-width:2px,color:#ffffff
-    class S1,S2,S3 proc
-    class G gist
 ```
+
+Shapes carry the meaning, so no two roles share one: the **box** around each step
+is the OS process boundary, the **double rectangle** inside it is a call out to a
+separate program, **parallelograms** are data handed between steps (`run.sh`
+wipes them at the start of every run), the **cylinder** is the one thing here
+that persists, and the **diamond** returns a verdict.
 
 ## Why the boundaries are processes, not instructions
 
