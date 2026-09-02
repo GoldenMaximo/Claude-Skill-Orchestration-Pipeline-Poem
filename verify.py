@@ -118,25 +118,22 @@ def check_step(root, n, skill, filename, prev_filename):
     if obj.get("step") != n:
         out.append((BAD, "step %d: file says step %r" % (n, obj.get("step"))))
 
-    if prev_filename is None:
-        if obj.get("input_sha256") is not None:
-            out.append((WARN, "step %d: head of chain but carries an input_sha256" % n))
-    else:  # every step is chained now, step 1 included -- to the run request
-        prev_path = os.path.join(root, HANDOFF, prev_filename)
-        if not os.path.exists(prev_path):
-            out.append((BAD, "step %d: input %s is gone; cannot verify the chain" % (n, prev_filename)))
+    # Every step is chained, step 1 included -- to the run request.
+    prev_path = os.path.join(root, HANDOFF, prev_filename)
+    if not os.path.exists(prev_path):
+        out.append((BAD, "step %d: input %s is gone; cannot verify the chain" % (n, prev_filename)))
+    else:
+        actual = sha256(prev_path)
+        recorded = obj.get("input_sha256")
+        if recorded is None:
+            out.append((BAD, "step %d: no input_sha256 -- did not prove it read %s" % (n, prev_filename)))
+        elif recorded.lower() != actual:
+            out.append((BAD, "step %d: input_sha256 mismatch. recorded %s, actual %s -- "
+                             "step ran but did not read the real input."
+                        % (n, str(recorded)[:16], actual[:16])))
         else:
-            actual = sha256(prev_path)
-            recorded = obj.get("input_sha256")
-            if recorded is None:
-                out.append((BAD, "step %d: no input_sha256 -- did not prove it read %s" % (n, prev_filename)))
-            elif recorded.lower() != actual:
-                out.append((BAD, "step %d: input_sha256 mismatch. recorded %s, actual %s -- "
-                                 "step ran but did not read the real input."
-                            % (n, str(recorded)[:16], actual[:16])))
-            else:
-                out.append((OK, "step %d (%s): produced %s, chained to %s" % (n, skill, filename, prev_filename)))
-                return out
+            out.append((OK, "step %d (%s): produced %s, chained to %s" % (n, skill, filename, prev_filename)))
+            return out
 
     if not out or all(lvl == WARN for lvl, _ in out):
         out.append((OK, "step %d (%s): produced %s" % (n, skill, filename)))
@@ -145,53 +142,6 @@ def check_step(root, n, skill, filename, prev_filename):
     if nd:
         out.append((WARN, "step %d reported not-done: %s" % (n, "; ".join(str(x) for x in nd))))
     return out
-
-
-def hook_findings(root):
-    """What the PreToolUse probes observed. Answers the two doc questions."""
-    lines = []
-    skill_log = os.path.join(root, LOGS, "skill-invocations.jsonl")
-    all_log = os.path.join(root, LOGS, "all-tools.jsonl")
-
-    def read_jsonl(p):
-        recs = []
-        if not os.path.exists(p):
-            return recs
-        with open(p, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    recs.append(json.loads(line))
-                except Exception:
-                    pass
-        return recs
-
-    matched = read_jsonl(skill_log)
-    every = read_jsonl(all_log)
-    skill_calls_seen = [r for r in every if r.get("tool_name") == "Skill"]
-
-    lines.append("  Skill tool calls seen by the catch-all matcher : %d" % len(skill_calls_seen))
-    lines.append("  payloads captured by matcher \"Skill\"           : %d" % len(matched))
-
-    if skill_calls_seen and not matched:
-        lines.append("  => matcher \"Skill\" did NOT fire. Do not build on it.")
-    elif matched:
-        lines.append("  => matcher \"Skill\" fires.")
-        names = []
-        for rec in matched:
-            ti = rec.get("tool_input") or {}
-            if isinstance(ti, dict) and "skill" in ti:
-                names.append(ti["skill"])
-        if names:
-            lines.append("  => skill name IS in the payload at tool_input.skill: %s" % ", ".join(names))
-        else:
-            keys = sorted({k for r in matched for k in r.keys()})
-            lines.append("  => no tool_input.skill found. payload keys: %s" % ", ".join(keys))
-    elif not every:
-        lines.append("  => no hook output at all. Hooks did not load, or nothing ran yet.")
-    return lines
 
 
 def request_evidence(request, poem, translation):
@@ -248,9 +198,6 @@ def publish_evidence(published):
         return [(BAD, "step 3 did not publish, and publishing is not optional: %s" % nd)]
     return [(OK, "step 3 published to gist %s (locally claimed; --check-gist proves it)"
              % (payload.get("gist_id") or "<none recorded>"))]
-
-
-GIST_FILE = "poem.md"
 
 
 def gist_evidence(gist_obj, filename, local_bytes):
@@ -310,17 +257,19 @@ def check_gist(root="."):
         print("  [%s] step 3 recorded published=false (%s). Nothing to check." % (WARN, nd))
         return 0
 
-    md_path = os.path.join(root, payload.get("markdown_path") or "handoff/poem.md")
-    if not os.path.exists(md_path):
+    md_path = os.path.join(root, payload.get("markdown_path") or "")
+    if not os.path.isfile(md_path):
         print("  [%s] claims published but %s is gone; cannot compare." % (BAD, md_path))
         return 1
     local = open(md_path, "rb").read()
 
+    worst = OK
     recorded_md = payload.get("markdown_sha256")
     if recorded_md and recorded_md.lower() != sha256_bytes(local):
         print("  [%s] markdown_sha256 mismatch: recorded %s, actual %s -- step 3 "
               "did not hash the file it left behind."
               % (BAD, str(recorded_md)[:16], sha256_bytes(local)[:16]))
+        worst = BAD
 
     gist_id = payload.get("gist_id")
     if not gist_id:
@@ -331,20 +280,22 @@ def check_gist(root="."):
     if err:
         print("  [%s] could not read gist %s: %s" % (WARN, gist_id, err))
         return 0
-    level, msg = gist_evidence(gist, payload.get("gist_file") or GIST_FILE, local)
+    level, msg = gist_evidence(gist, payload.get("gist_file"), local)
     print("  [%s] %s" % (level, msg))
+    if level == BAD:
+        worst = BAD
 
     actual_vis = "public" if gist.get("public") else "secret"
     claimed_vis = payload.get("visibility")
     if claimed_vis and claimed_vis != actual_vis:
         print("  [%s] visibility recorded %r, gist is actually %r."
               % (BAD, claimed_vis, actual_vis))
-        level = BAD
+        worst = BAD
     else:
         print("  [%s] gist is %s, and the artifact says so." % (OK, actual_vis))
     if actual_vis == "public":
         print("  [%s] this gist is PUBLIC. The poem is world-readable." % WARN)
-    return 1 if level == BAD else 0
+    return 1 if worst == BAD else 0
 
 
 def main(root="."):
@@ -370,12 +321,6 @@ def main(root="."):
     for level, msg in asked:
         print("  [%s] %s" % (level, msg))
 
-    print()
-    print("Hook probe -- PreToolUse matcher \"Skill\"")
-    print("-" * 62)
-    for line in hook_findings(root):
-        print(line)
-
     failed = sum(1 for lvl, _ in results if lvl == BAD)
     print()
     print("%d failure(s)." % failed if failed else "Chain verified end to end.")
@@ -399,12 +344,14 @@ def selftest():
                     "input_file": inp, "input_sha256": sha, "payload": {}, "not_done": []}
 
         # missing file -> FAIL, and says the step did not run
-        r = check_step(d, 1, "poem-writer", "01-poem.json", None)
+        r = check_step(d, 1, "poem-writer", "01-poem.json", REQUEST)
         assert any(lvl == BAD and "DID NOT RUN" in m for lvl, m in r), r
 
-        p1 = write("01-poem.json", base(1, "poem-writer"))
-        r = check_step(d, 1, "poem-writer", "01-poem.json", None)
+        req = write(REQUEST, {"theme": None, "target_language": "pt-BR"})
+        p1 = write("01-poem.json", base(1, "poem-writer", "handoff/" + REQUEST, sha256(req)))
+        r = check_step(d, 1, "poem-writer", "01-poem.json", REQUEST)
         assert any(lvl == OK for lvl, _ in r), r
+        assert not any(lvl == BAD for lvl, _ in r), r
 
         # correct hash -> PASS
         write("02-translation.json", base(2, "poem-translator", "handoff/01-poem.json", sha256(p1)))

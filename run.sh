@@ -11,28 +11,31 @@
 # Usage:
 #   ./run.sh [-t|--theme SUBJECT] [-l|--lang LANGUAGE] [--keep]
 #
-#   -t, --theme    what the poem is about. Omit to let step 1 choose.
-#   -l, --lang     what step 2 translates into. Default pt-BR. A name
-#                  ("Japanese"), a tag ("ja"), anything -- it is echoed back
-#                  verbatim so verify.py can check the language that arrived.
-#       --keep     do not wipe handoff/ and logs/ first (KEEP=1 also works).
-#
 #   ./run.sh -t "a lighthouse in winter" -l Japanese
 set -uo pipefail
 cd "$(dirname "$0")"
 
 THEME=""
 LANG_TARGET="pt-BR"
-KEEP="${KEEP:-0}"
+KEEP=0
 
-usage () { sed -n '11,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage () {
+  cat <<'USAGE'
+Usage: ./run.sh [-t|--theme SUBJECT] [-l|--lang LANGUAGE] [--keep]
+
+  -t, --theme  what the poem is about. Omit to let step 1 choose.
+  -l, --lang   what step 2 translates into. Default pt-BR. A name
+               ("Japanese"), a tag ("ja"), anything -- it is echoed back
+               verbatim so verify.py can check the language that arrived.
+      --keep   do not wipe handoff/ and logs/ first.
+USAGE
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -t|--theme) [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
                 THEME="$2"; shift 2 ;;
-    -l|--lang|--language)
-                [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+    -l|--lang)  [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
                 LANG_TARGET="$2"; shift 2 ;;
     --keep)     KEEP=1; shift ;;
     -h|--help)  usage; exit 0 ;;
