@@ -14,27 +14,30 @@ The whole of it was one command:
 
 ```mermaid
 flowchart TD
-    F["./run.sh --theme … --lang …"] --> R["00-request.json"]
+    F(["./run.sh --theme ... --lang ..."]) --> R(["00-request.json"])
 
-    subgraph P1["process 1 · poem-writer"]
-        S1["write an English poem<br/>on the requested theme"]
-    end
-    subgraph P2["process 2 · poem-translator"]
-        S2["translate into<br/>the requested language"]
-    end
-    subgraph P3["process 3 · gist-publisher"]
-        S3["render Markdown,<br/>update this gist"]
-    end
+    R --> S1["process 1 - poem-writer<br/>write an English poem<br/>on the requested theme"]
+    S1 --> A1(["01-poem.json<br/>+ sha256 of the request"])
 
-    R --> S1 --> A1["01-poem.json<br/><i>+ sha256 of the request</i>"]
-    A1 --> S2 --> A2["02-translation.json<br/><i>+ sha256 of 01</i>"]
-    A2 --> S3 --> A3["03-published.json<br/><i>+ sha256 of 02</i>"]
-    S3 --> G(["this gist · poem.md"])
+    A1 --> S2["process 2 - poem-translator<br/>translate into<br/>the requested language"]
+    S2 --> A2(["02-translation.json<br/>+ sha256 of 01"])
+
+    A2 --> S3["process 3 - gist-publisher<br/>render Markdown,<br/>update this gist"]
+    S3 --> A3(["03-published.json<br/>+ sha256 of 02"])
+    S3 --> G[("this gist<br/>poem.md")]
 
     A1 -.-> V{{"verify.py<br/>reads only artifacts"}}
     A2 -.-> V
     A3 -.-> V
     G -.-> V
+
+    %% Both fill and text colour are set explicitly, so the processes read the
+    %% same whether GitHub serves the light or the dark mermaid theme. The
+    %% artifacts are left unstyled and follow whichever theme is in use.
+    classDef proc fill:#1f6feb,stroke:#58a6ff,stroke-width:2px,color:#ffffff
+    classDef gist fill:#238636,stroke:#3fb950,stroke-width:2px,color:#ffffff
+    class S1,S2,S3 proc
+    class G gist
 ```
 
 ## Why the boundaries are processes, not instructions
