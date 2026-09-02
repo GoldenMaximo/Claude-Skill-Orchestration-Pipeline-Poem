@@ -7,6 +7,8 @@ Three skills, three separate `claude` processes, one file between each.
 
 ```
 poem-writer ──01-poem.json──▶ poem-translator ──02-translation.json──▶ gist-publisher ──▶ 03-published.json
+                                                                             │
+                                                                             └─▶ one named gist, file poem.md
 ```
 
 ## The two rules being tested
@@ -17,18 +19,24 @@ cannot see it. If the chain works under those conditions, the handoff file is
 provably the channel, because there is nothing else it could have been.
 
 **A step ran if and only if its file exists.** `verify.py` decides from artifacts,
-never from what a step said. It reports three strengths of evidence:
+never from what a step said. It reports four strengths of evidence:
 
 | | Means |
 |---|---|
 | `EXISTS` | the file is there, non-empty, parseable, correctly shaped |
 | `CHAINED` | step N recorded the SHA-256 of step N−1's file, and it matches disk |
 | `HONEST` | the model's claim agrees with the artifact |
+| `SERVED` | the gist actually serves back the exact bytes of `handoff/poem.md` |
 
-`CHAINED` is the one that earns its keep. A step that invents its input passes
-`EXISTS` and fails `CHAINED`. A step whose transcript says "published the gist"
-while `03-published.json` is missing is reported as a **false claim**, which is
-a worse outcome than an honest failure and does not look the same.
+`CHAINED` is the one that earns its keep locally. A step that invents its input
+passes `EXISTS` and fails `CHAINED`. A step whose transcript says "published the
+gist" while `03-published.json` is missing is reported as a **false claim**,
+which is a worse outcome than an honest failure and does not look the same.
+
+`SERVED` is the same rule pointed at the network, and it is the only check that
+can tell a real publish from a recorded `gist_url`. A URL in a JSON file is a
+claim like any other; the evidence is the remote content matching the local
+render byte for byte. It needs network, so it is opt-in.
 
 A step that ran and failed still writes its file, with `payload: null` and the
 reason in `not_done`. Failing loudly and not running at all must be
@@ -47,13 +55,40 @@ Publishing is **off by default**. Step 3 renders the Markdown and records
 POC_PUBLISH=1 ./run.sh
 ```
 
-Gists are created `--secret`, never `--public`. The chain is fully testable
-without ever creating one.
+```bash
+python3 verify.py --selftest      # the verifier's own checks, no network
+python3 verify.py                 # verdict on the current handoff/ contents
+python3 verify.py --check-gist    # network: does the gist serve this run's poem?
+```
+
+## The gist step 3 writes into
+
+Step 3 **updates one gist that already exists**. It never creates one, never
+deletes one, and never removes a file from one. The target is
+[`82d5937c2bd01d9ade230e3722074bd3`](https://gist.github.com/GoldenMaximo/82d5937c2bd01d9ade230e3722074bd3),
+set in `run.sh` and passed to the step as `POC_GIST_ID`.
 
 ```bash
-python3 verify.py --selftest   # the verifier's own checks
-python3 verify.py              # verdict on the current handoff/ contents
+gh gist edit "$POC_GIST_ID" --add handoff/poem.md
 ```
+
+`--add` names the file by its basename, `poem.md`, and replaces that file's
+contents when it is already present — so the command is idempotent and does not
+accumulate copies. Any other file in the gist is untouched.
+
+Point it somewhere else with the two overrides:
+
+```bash
+POC_GIST_ID=<other id> POC_GIST_ACCOUNT=<owner> POC_PUBLISH=1 ./run.sh
+```
+
+**That gist is public.** An earlier version of this POC created its own gist with
+`--secret`; updating a gist you were handed is a different act, and the
+visibility was already decided by whoever made it. Step 3 therefore does not set
+visibility at all — it reads what the gist actually is off the API and records
+that, and `verify.py --check-gist` prints a `WARN` when the answer is public.
+The poem in that gist is world-readable. That is the deliberate trade for
+publishing to a named target instead of one this repo controls.
 
 ## Findings
 
@@ -90,18 +125,9 @@ and a catch-all control. If a Skill tool call shows up in `logs/all-tools.jsonl`
 but nothing lands in `logs/skill-invocations.jsonl`, the specific matcher is what
 failed — not the invocation. `verify.py` prints that comparison.
 
-## Known blocker
-
-Nested `claude -p` cannot authenticate on this machine right now:
-
-```
-Failed to authenticate: OAuth session expired and could not be refreshed
-```
-
-The keychain entry `Claude Code-credentials` exists but holds empty
-`accessToken` and `refreshToken`, and `~/.claude/daemon-auth-status.json` reads
-`{"status":"auth_required"}`. Log in interactively and re-run. Nothing about the
-chain design depends on this.
+Note that the catch-all probe also logs the tool calls of any *other* session
+working in this directory, this one included, so a non-zero count in
+`all-tools.jsonl` is not by itself evidence that a chain step ran.
 
 ## Traps already hit, so you don't
 
@@ -109,11 +135,24 @@ chain design depends on this.
   another tool name and the run dies with *"Input must be provided either through
   stdin or as a prompt argument"*. Send the prompt on stdin.
 - **`--setting-sources project` breaks auth.** It drops the user settings carrying
-  credentials, and every step fails with the OAuth message above — which reads as
-  a credentials problem and is a flag problem. Isolation does not need it; the
-  process boundary already provides it.
+  credentials, and every step fails with *"OAuth session expired and could not be
+  refreshed"* — which reads as a credentials problem and is a flag problem.
+  Isolation does not need it; the process boundary already provides it.
 - **`--output-format json` returns either a result object or an array of messages**
   ending in one, depending on which settings loaded. `verify.py` handles both.
+- **`HTTP 403: Rate Limit Exceeded` from `gh` is usually the wrong account, not
+  the rate.** With two accounts logged in, `gh` uses the *active* one; an
+  enterprise-managed (EMU) account gets 403 on an ordinary github.com gist while
+  `gh api rate_limit` cheerfully reports 5000 remaining. `run.sh` pins
+  `GH_TOKEN=$(gh auth token --user "$POC_GIST_ACCOUNT")` for step 3 rather than
+  running `gh auth switch`, which would change the active account globally.
+- **`gh gist edit` is only non-interactive if you give it a source file.** With
+  just an id it opens `$EDITOR` and hangs a `--print` run forever. The second
+  positional argument (or `-a/--add`) is the local file it reads instead.
+- **Don't compare against `gh ... --jq '.files[].content'`.** `--jq` appends a
+  newline, so a byte-for-byte comparison fails on a file that is in fact
+  identical. `verify.py` parses the JSON and compares the `content` string's
+  UTF-8 bytes.
 
 ## Limitation
 
