@@ -6,6 +6,12 @@ The only thing that crossed between them was a file on disk.
 
 **Repo:** https://github.com/GoldenMaximo/Claude-Skill-Orchestration-Pipeline-Poem
 
+The whole of it was one command:
+
+```bash
+./run.sh --theme "a Nissan Silvia S13 with an RB25 Turbo engine that whistles" --lang Japanese
+```
+
 ```mermaid
 flowchart TD
     F["./run.sh --theme … --lang …"] --> R["00-request.json"]
